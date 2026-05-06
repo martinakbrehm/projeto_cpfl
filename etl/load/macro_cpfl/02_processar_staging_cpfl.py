@@ -6,13 +6,13 @@ Passo 2 do pipeline CPFL.
 Lê staging_imports com status='completed' que ainda tenham linhas não
 processadas e insere nas tabelas de produção:
 
-  clientes → cliente_uc → tabela_macros_cpfl → telefones → enderecos
+  clientes -> cliente_uc -> tabela_macros_cpfl -> telefones -> enderecos
 
 Regras:
   • Se o cliente (CPF) não existe em `clientes`, cria.
   • Se a UC não existe em `cliente_uc` para esse cliente, cria.
   • Se a combinação CPF+UC já tem registro em `tabela_macros_cpfl`
-    com status NOT IN ('excluido'), o registro é ignorado (não duplica).
+    com status NOT IN ('ativo','inativo'), o registro é ignorado (não duplica).
   • Telefones e endereços são inseridos sem duplicatas (chave por
     (cliente_id, telefone) e (cliente_uc_id, cep)).
 
@@ -27,6 +27,12 @@ Uso:
 import argparse
 import re
 import sys
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 import time
 from datetime import datetime
 from pathlib import Path
@@ -40,8 +46,8 @@ from config import db_cpfl  # noqa: E402
 
 DB_CONFIG = db_cpfl(autocommit=False, read_timeout=600, write_timeout=600)
 
-RESPOSTA_PENDENTE = 5   # id em `respostas` → 'Aguardando processamento'
-BATCH             = 5000
+RESPOSTA_PENDENTE = 4   # id em `respostas` -> 'Aguardando processamento'
+BATCH             = 50_000
 SEP               = "=" * 70
 
 
@@ -163,29 +169,55 @@ def conectar():
     return conn
 
 
-def carregar_maps(cur) -> tuple[dict, dict, set, set, set]:
-    print("  [INFO] Carregando maps de deduplicação...")
+def lookup_chunk(cur, cpfs: set, ucs_por_cpf: dict) -> tuple[dict, dict, set, set, set]:
+    """Busca no banco apenas os CPFs/UCs presentes no chunk atual.
+    Muito mais eficiente que carregar tudo em memória.
+    """
+    if not cpfs:
+        return {}, {}, set(), set(), set()
 
-    cur.execute("SELECT cpf, id FROM clientes")
+    ph = ",".join(["%s"] * len(cpfs))
+    cpfs_list = list(cpfs)
+
+    cur.execute(f"SELECT cpf, id FROM clientes WHERE cpf IN ({ph})", cpfs_list)
     cpf_map = {r[0]: r[1] for r in cur.fetchall()}
 
-    cur.execute("SELECT cliente_id, uc, id FROM cliente_uc")
-    uc_map = {(r[0], r[1]): r[2] for r in cur.fetchall()}
+    cids = list(cpf_map.values())
+    uc_map: dict = {}
+    macros_set: set = set()
+    tel_set: set = set()
+    end_set: set = set()
 
-    cur.execute(
-        "SELECT cliente_id, COALESCE(cliente_uc_id, 0) FROM tabela_macros_cpfl "
-        "WHERE status != 'excluido'"
-    )
-    macros_set = {(r[0], r[1]) for r in cur.fetchall()}
+    if cids:
+        ph_c = ",".join(["%s"] * len(cids))
 
-    cur.execute("SELECT cliente_id, telefone FROM telefones WHERE telefone IS NOT NULL")
-    tel_set = {(r[0], int(r[1])) for r in cur.fetchall()}
+        cur.execute(
+            f"SELECT cliente_id, uc, id FROM cliente_uc WHERE cliente_id IN ({ph_c})",
+            cids,
+        )
+        uc_map = {(r[0], r[1]): r[2] for r in cur.fetchall()}
 
-    cur.execute("SELECT COALESCE(cliente_uc_id, 0), COALESCE(cep,'') FROM enderecos")
-    end_set = {(r[0], str(r[1]).strip()) for r in cur.fetchall()}
+        cur.execute(
+            f"SELECT cliente_id, COALESCE(cliente_uc_id,0) "
+            f"FROM tabela_macros_cpfl WHERE cliente_id IN ({ph_c}) AND status NOT IN ('ativo','inativo')",
+            cids,
+        )
+        macros_set = {(r[0], r[1]) for r in cur.fetchall()}
 
-    print(f"  [INFO] {len(cpf_map):,} clientes  {len(uc_map):,} ucs  "
-          f"{len(macros_set):,} macros  {len(tel_set):,} tels  {len(end_set):,} enderecos")
+        cur.execute(
+            f"SELECT cliente_id, telefone FROM telefones "
+            f"WHERE cliente_id IN ({ph_c}) AND telefone IS NOT NULL",
+            cids,
+        )
+        tel_set = {(r[0], int(r[1])) for r in cur.fetchall()}
+
+        cur.execute(
+            f"SELECT COALESCE(cliente_uc_id,0), COALESCE(cep,'') "
+            f"FROM enderecos WHERE cliente_id IN ({ph_c})",
+            cids,
+        )
+        end_set = {(r[0], str(r[1]).strip()) for r in cur.fetchall()}
+
     return cpf_map, uc_map, macros_set, tel_set, end_set
 
 
@@ -224,7 +256,6 @@ def processar_staging(conn, staging_id: int, dry_run: bool) -> dict:
     print(f"\n  staging_id={staging_id}  |  {filepath.name}")
     print(f"  linhas_válidas={len(valid_rows):,}")
 
-    cpf_map, uc_map, macros_set, tel_set, end_set = carregar_maps(cur)
     cur.close()
     conn.commit()
 
@@ -236,6 +267,7 @@ def processar_staging(conn, staging_id: int, dry_run: bool) -> dict:
     cur_w = conn.cursor()
     df_validas = df[df.index.isin(valid_rows.keys())]
     all_idxs   = list(df_validas.index)
+    all_processed_idxs: list = []  # acumula todos os idx processados no arquivo
 
     for chunk_start in range(0, len(all_idxs), BATCH):
         chunk_idxs = all_idxs[chunk_start: chunk_start + BATCH]
@@ -267,8 +299,14 @@ def processar_staging(conn, staging_id: int, dry_run: bool) -> dict:
                 "cep":       norm_str(row.get("cep"), 20),
             })
 
+        # ── Lookup lazy no banco apenas para os CPFs deste chunk ─────────
         if not parsed:
             continue
+
+        cpfs_chunk_all = {d["cpf"] for d in parsed}
+        cpf_map, uc_map, macros_set, tel_set, end_set = lookup_chunk(
+            cur_w, cpfs_chunk_all, {}
+        )
 
         # Deduplicar CPF+UC dentro do chunk
         seen = set()
@@ -293,11 +331,11 @@ def processar_staging(conn, staging_id: int, dry_run: bool) -> dict:
                     [(c, nome_por_cpf[c], data_criacao) for c in novos_cpfs],
                 )
                 stats["clientes_novos"] += cur_w.rowcount
-
-            ph = ",".join(["%s"] * len(cpfs_chunk))
-            cur_w.execute(f"SELECT id, cpf FROM clientes WHERE cpf IN ({ph})",
-                          list(cpfs_chunk))
-            cpf_map.update({r[1]: r[0] for r in cur_w.fetchall()})
+                # Busca apenas os CPFs recém-inseridos (não os já no map)
+                ph = ",".join(["%s"] * len(novos_cpfs))
+                cur_w.execute(f"SELECT id, cpf FROM clientes WHERE cpf IN ({ph})",
+                              list(novos_cpfs))
+                cpf_map.update({r[1]: r[0] for r in cur_w.fetchall()})
         else:
             for i, d in enumerate(parsed_novo):
                 if d["cpf"] not in cpf_map:
@@ -320,18 +358,15 @@ def processar_staging(conn, staging_id: int, dry_run: bool) -> dict:
                     [(cid, u, data_criacao) for cid, u in novas_ucs],
                 )
                 stats["uc_novas"] += cur_w.rowcount
-
-            if chaves_uc:
-                cids = {t[0] for t in chaves_uc}
-                ph = ",".join(["%s"] * len(cids))
+                # Busca apenas as UCs recém-inseridas
+                cids_novos = {t[0] for t in novas_ucs}
+                ph = ",".join(["%s"] * len(cids_novos))
                 cur_w.execute(
                     f"SELECT id, cliente_id, uc FROM cliente_uc WHERE cliente_id IN ({ph})",
-                    list(cids),
+                    list(cids_novos),
                 )
                 for r in cur_w.fetchall():
-                    k = (r[1], r[2])
-                    if k in chaves_uc:
-                        uc_map[k] = r[0]
+                    uc_map[(r[1], r[2])] = r[0]
         else:
             for i, chave in enumerate(novas_ucs):
                 uc_map[chave] = -(chunk_start + i + 1)
@@ -412,17 +447,12 @@ def processar_staging(conn, staging_id: int, dry_run: bool) -> dict:
                 rows_ends,
             )
 
-        # ── FASE 6: checkpoint ───────────────────────────────────────────
+        # ── FASE 6: checkpoint local (sem UPDATE por linha) ────────────
         chunk_processed = [d["idx"] for d in parsed_novo]
         stats["processadas"] += len(chunk_processed)
+        all_processed_idxs.extend(chunk_processed)
 
         if not dry_run:
-            ph = ",".join(["%s"] * len(chunk_processed))
-            cur_w.execute(
-                f"UPDATE staging_import_rows SET processed_at=NOW() "
-                f"WHERE staging_id=%s AND row_idx IN ({ph})",
-                [staging_id] + chunk_processed,
-            )
             conn.commit()
 
         pct = stats["processadas"] / len(valid_rows) * 100
@@ -435,12 +465,25 @@ def processar_staging(conn, staging_id: int, dry_run: bool) -> dict:
             f"  end={stats['enderecos']}"
         )
 
-    if not dry_run:
+    # ── Marcar processed_at em lote único no final do arquivo ──────────
+    if not dry_run and all_processed_idxs:
+        print(f"  [INFO] Marcando {len(all_processed_idxs):,} linhas como processed_at...")
+        MARK_BATCH = 10_000
+        for i in range(0, len(all_processed_idxs), MARK_BATCH):
+            sub = all_processed_idxs[i: i + MARK_BATCH]
+            ph = ",".join(["%s"] * len(sub))
+            cur_w.execute(
+                f"UPDATE staging_import_rows SET processed_at=NOW() "
+                f"WHERE staging_id=%s AND row_idx IN ({ph})",
+                [staging_id] + sub,
+            )
+            conn.commit()
         cur_w.execute(
             "UPDATE staging_imports SET rows_success=%s WHERE id=%s",
             (stats["processadas"], staging_id),
         )
         conn.commit()
+        print(f"  [INFO] processed_at marcado.")
 
     cur_w.close()
     return stats
@@ -451,14 +494,14 @@ def processar_staging(conn, staging_id: int, dry_run: bool) -> dict:
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Processar staging CPFL — Passo 2")
+    parser = argparse.ArgumentParser(description="Processar staging CPFL -- Passo 2")
     parser.add_argument("--staging-id", type=int, default=None,
                         help="Processar apenas um staging_id específico")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     print(SEP)
-    print("PASSO 02 CPFL  –  Processar staging → produção")
+    print("PASSO 02 CPFL  -  Processar staging -> produção")
     if args.dry_run:
         print("  [DRY-RUN] nenhuma alteração será gravada")
     print(SEP)

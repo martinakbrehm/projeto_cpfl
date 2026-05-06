@@ -371,7 +371,7 @@ class PainelCPFL:
         if re.search(r"PASSO \d+/3", l):
             self._log_append(linha, "titulo")
             return
-        if re.search(r"\[OK\]|sucesso|consolidado|salvo", l, re.I):
+        if re.search(r"\[OK\]|sucesso|ativo|salvo", l, re.I):
             self._log_append(linha, "ok")
             return
         if re.search(r"\[ERRO\]|\[AVISO\]|AVISO|error|falha|excep", l, re.I):

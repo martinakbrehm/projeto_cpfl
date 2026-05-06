@@ -8,13 +8,10 @@ try:
 except ImportError:
     from data import loader
 
-# ID da resposta que representa falha/erro na macro
-RESPOSTA_ID_ERRO = 11
-
-# Statuses que indicam cliente ativo (contrato consolidado)
-STATUS_ATIVO = {"consolidado"}
-# Statuses que indicam cliente inativo/excluído/aguardando
-STATUS_INATIVO = {"excluido", "reprocessar"}
+# Statuses que indicam cliente ativo (titularidade confirmada)
+STATUS_ATIVO   = {"ativo"}
+# Statuses que indicam cliente inativo
+STATUS_INATIVO = {"inativo"}
 
 
 def build_dashboard_data(resumo_sel, filtro_empresa,
@@ -160,7 +157,7 @@ def build_tabela_arquivos(granularidade: str = "combo") -> list:
     int_cols = [
         "cpfs_no_arquivo", "cpfs_processados", "ativos", "inativos",
         "cpfs_ineditos", "ucs_ineditas",
-        "combos_processadas", "combos_ativas", "combos_excluidas", "combos_reprocessar",
+        "combos_processadas", "combos_ativas", "combos_inativas",
         "ineditos_processados", "ineditos_ativos", "ineditos_inativos",
     ]
     for col in int_cols:
@@ -175,12 +172,8 @@ def build_tabela_arquivos(granularidade: str = "combo") -> list:
         lambda r: f"{round(r['combos_ativas'] / r['combos_processadas'] * 100, 1)}%"
         if r["combos_processadas"] > 0 else "-", axis=1,
     )
-    df["pct_combos_excluidas"] = df.apply(
-        lambda r: f"{round(r['combos_excluidas'] / r['combos_processadas'] * 100, 1)}%"
-        if r["combos_processadas"] > 0 else "-", axis=1,
-    )
-    df["pct_combos_reprocessar"] = df.apply(
-        lambda r: f"{round(r['combos_reprocessar'] / r['combos_processadas'] * 100, 1)}%"
+    df["pct_combos_inativas"] = df.apply(
+        lambda r: f"{round(r['combos_inativas'] / r['combos_processadas'] * 100, 1)}%"
         if r["combos_processadas"] > 0 else "-", axis=1,
     )
 
@@ -191,8 +184,7 @@ def build_tabela_arquivos(granularidade: str = "combo") -> list:
         "cpfs_no_arquivo", "ucs_ineditas",
         "combos_processadas", "combos_pendentes",
         "combos_ativas", "pct_combos_ativas",
-        "combos_excluidas", "pct_combos_excluidas",
-        "combos_reprocessar", "pct_combos_reprocessar",
+        "combos_inativas", "pct_combos_inativas",
     ]].to_dict("records")
 
 

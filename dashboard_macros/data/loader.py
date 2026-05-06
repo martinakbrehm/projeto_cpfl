@@ -6,9 +6,9 @@ import pymysql
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from config import db_destino  # noqa: E402
+from config import db_cpfl  # noqa: E402
 
-DB_CONFIG = db_destino()
+DB_CONFIG = db_cpfl()
 
 _CACHE: dict = {}        # cache por tipo {'macro': df} — sem TTL, vive durante o processo
 _CACHE_STATS: dict = {}  # cache para stats_por_arquivo / cobertura
@@ -19,8 +19,24 @@ _CACHE_STATS_TTL = 300   # segundos (5 min)
 # sp_refresh_dashboard_macros_agg() chamada ao final do ETL.
 # SELECT simples em tabela indexada: latência <1ms.
 # ---------------------------------------------------------------------------
+# Query direta na tabela_macros_cpfl + respostas (sem tabela materializada)
 SQLs = {
-    "macro": "SELECT dia, status, mensagem, resposta_status, empresa, fornecedor, arquivo_origem, qtd FROM dashboard_macros_agg ORDER BY dia DESC",
+    "macro": """
+        SELECT
+            DATE(tm.data_update)  AS dia,
+            tm.status             AS status,
+            r.mensagem            AS mensagem,
+            r.status              AS resposta_status,
+            NULL                  AS empresa,
+            NULL                  AS fornecedor,
+            NULL                  AS arquivo_origem,
+            COUNT(*)              AS qtd
+        FROM tabela_macros_cpfl tm
+        JOIN respostas r ON r.id = tm.resposta_id
+        WHERE tm.status NOT IN ('pendente', 'processando')
+        GROUP BY DATE(tm.data_update), tm.status, r.mensagem, r.status
+        ORDER BY dia DESC
+    """,
 }
 
 
@@ -67,24 +83,11 @@ def invalidar_cache(tipo: str = None):
 
 
 def refresh_dashboard_macros_agg() -> bool:
-    """Executa a stored procedure que re-popula a tabela materializada.
-
-    Deve ser chamada ao final de cada ciclo do ETL (passo 04).
-    Invalida o cache de 'macro' automaticamente após o refresh.
-    Retorna True se bem-sucedido, False caso contrário.
+    """Invalida o cache para forçar recarga na próxima leitura.
+    (CPFL: sem tabela materializada, dados lidos diretamente.)
     """
-    try:
-        conn = pymysql.connect(**DB_CONFIG)
-        with conn.cursor() as cur:
-            cur.execute("CALL sp_refresh_dashboard_macros_agg()")
-            conn.commit()
-        conn.close()
-        invalidar_cache("macro")
-        print("[INFO] dashboard_macros_agg atualizada com sucesso.")
-        return True
-    except Exception as e:
-        print(f"[ERRO] Falha ao executar sp_refresh_dashboard_macros_agg: {e}")
-        return False
+    invalidar_cache("macro")
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -94,12 +97,27 @@ def refresh_dashboard_macros_agg() -> bool:
 # procedure, nunca diretamente no dashboard.
 # ---------------------------------------------------------------------------
 _SQL_STATS_ARQUIVO_MAT = """
-    SELECT arquivo, data_carga, cpfs_no_arquivo, cpfs_processados, ativos, inativos,
-           cpfs_ineditos, ucs_ineditas, combos_processadas, combos_ativas,
-           combos_excluidas, combos_reprocessar,
-           ineditos_processados, ineditos_ativos, ineditos_inativos
-    FROM dashboard_arquivos_agg
-    ORDER BY data_carga DESC
+    SELECT
+        si.filename                                      AS arquivo,
+        DATE(si.created_at)                              AS data_carga,
+        si.rows_success                                  AS cpfs_no_arquivo,
+        COUNT(DISTINCT tm.cliente_id)                    AS cpfs_processados,
+        SUM(IF(tm.status='ativo',  1, 0))                AS ativos,
+        SUM(IF(tm.status='inativo',1, 0))                AS inativos,
+        COUNT(DISTINCT tm.cliente_id)                    AS cpfs_ineditos,
+        COUNT(*)                                         AS ucs_ineditas,
+        SUM(IF(tm.status NOT IN ('pendente','processando'),1,0)) AS combos_processadas,
+        SUM(IF(tm.status='ativo',  1, 0))                AS combos_ativas,
+        SUM(IF(tm.status='inativo',1, 0))                AS combos_inativas,
+        0 AS ineditos_processados,
+        0 AS ineditos_ativos,
+        0 AS ineditos_inativos
+    FROM staging_imports si
+    LEFT JOIN tabela_macros_cpfl tm
+           ON DATE(tm.data_criacao) = DATE(si.created_at)
+    WHERE si.status = 'completed'
+    GROUP BY si.id, si.filename, si.created_at, si.rows_success
+    ORDER BY si.created_at DESC
 """
 
 
@@ -133,10 +151,15 @@ def carregar_stats_por_arquivo() -> pd.DataFrame:
 
 
 _SQL_COBERTURA = """
-    SELECT arquivo, data_carga,
-           total_combos, combos_novas, combos_existentes
-    FROM dashboard_cobertura_agg
-    ORDER BY data_carga DESC, arquivo
+    SELECT
+        si.filename          AS arquivo,
+        DATE(si.created_at)  AS data_carga,
+        si.rows_success      AS total_combos,
+        0                    AS combos_novas,
+        0                    AS combos_existentes
+    FROM staging_imports si
+    WHERE si.status = 'completed'
+    ORDER BY si.created_at DESC
 """
 
 
@@ -165,22 +188,8 @@ def carregar_cobertura() -> pd.DataFrame:
 
 
 def refresh_dashboard_arquivos_agg() -> bool:
-    """Recalcula dashboard_arquivos_agg diretamente (sem stored procedure).
-
-    Usa a lógica centralizada do refresh_scheduler para segurança.
-    """
-    try:
-        from dashboard_macros.refresh_scheduler import (
-            limpar_queries_orfas,
-            refresh_arquivos,
-        )
-        limpar_queries_orfas()
-        ok = refresh_arquivos()
-        if ok:
-            invalidar_cache("stats")
-        return ok
-    except Exception as e:
-        print(f"[ERRO] Falha ao atualizar dashboard_arquivos_agg: {e}")
-        return False
+    """Invalida o cache de stats para forçar recarga na próxima leitura."""
+    invalidar_cache("stats")
+    return True
 
 

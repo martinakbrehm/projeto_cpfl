@@ -5,7 +5,7 @@ ETAPA AUTOMÁTICA — Passo 1 do ciclo da macro CPFL.
 
 Responsabilidade:
   1. Consulta tabela_macros_cpfl com prioridade:
-       pendente > reprocessar | mais antigo primeiro
+       mais antigo primeiro
   2. Marca registros selecionados como 'processando'.
   3. Exporta lote como CSV no formato esperado pela macro CPFL:
          CPF;UC          (separador ponto-e-vírgula, sem cabeçalho extra)
@@ -52,11 +52,10 @@ SELECT
 FROM tabela_macros_cpfl tm
 JOIN clientes    c  ON c.id  = tm.cliente_id
 JOIN cliente_uc  cu ON cu.id = tm.cliente_uc_id
-WHERE tm.status IN ('pendente', 'reprocessar')
+WHERE tm.status = 'pendente'
 ORDER BY
-    (tm.status = 'pendente') DESC,
-    tm.data_update           ASC,
-    tm.id                    ASC
+    tm.data_update ASC,
+    tm.id          ASC
 LIMIT %s
 """
 
@@ -65,7 +64,7 @@ UPDATE tabela_macros_cpfl
 SET status = 'processando',
     data_update = NOW()
 WHERE id IN ({placeholders})
-  AND status IN ('pendente', 'reprocessar')
+  AND status = 'pendente'
 """
 
 

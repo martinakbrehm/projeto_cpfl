@@ -5,7 +5,7 @@ executar_automatico.py  -  Orquestrador contínuo da macro CPFL
 Coordena o ciclo completo de automação:
 
   PASSO 1  [EXTRACT]   etl/extraction/macro_cpfl/03_buscar_lote_cpfl.py
-                        -> Busca lote priorizado do banco (pendente > reprocessar),
+                        -> Busca lote priorizado do banco (pendente, mais antigo primeiro),
                            exporta macro/dados_cpfl/lote_pendente.csv
 
   PASSO 2  [MACRO]     valida_pn_gmp-main/executar_cpfl.py

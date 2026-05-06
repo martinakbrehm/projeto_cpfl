@@ -14,12 +14,12 @@ Responsabilidade:
      O registro original (pendente/processando) é revertido para 'pendente',
      preservando o histórico de quando a combinação CPF+UC foi enfileirada.
   5. Registros que ficaram em 'processando' mas não vieram no resultado
-     (macro parou no meio) são devolvidos para 'reprocessar'.
+     (macro parou no meio) são devolvidos para 'pendente'.
   6. Arquiva os arquivos de lote com timestamp em macro/dados_cpfl/arquivo/.
 
 Fluxo de status:
   pendente → processando   (passo 03)
-  processando → novo registro (consolidado | reprocessar | excluido)
+  processando → novo registro (ativo | inativo)
               + original revertido para pendente
 
 Uso:
@@ -80,7 +80,7 @@ WHERE id = %s AND status = 'processando'
 
 SQL_RECUPERAR_ORFAOS = """
 UPDATE tabela_macros_cpfl
-SET status = 'reprocessar', data_update = NOW()
+SET status = 'pendente', data_update = NOW()
 WHERE status = 'processando'
   AND data_update < NOW() - INTERVAL 2 HOUR
 """
@@ -188,7 +188,7 @@ def processar(conn, df: pd.DataFrame, indice: dict, dry_run: bool):
         cur.execute(SQL_RECUPERAR_ORFAOS)
         conn.commit()
         if cur.rowcount:
-            print(f"  [RECOVERY] {cur.rowcount} registros 'processando' revertidos para 'reprocessar'")
+            print(f"  [RECOVERY] {cur.rowcount} registros 'processando' revertidos para 'pendente'")
 
     cur.close()
     return n_ok, n_sem_meta, n_erro

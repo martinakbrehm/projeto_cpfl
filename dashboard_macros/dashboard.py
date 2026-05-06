@@ -202,8 +202,8 @@ app.layout = html.Div([
             html.P(
                 "Cada linha representa um dia em que a macro rodou. "
                 "Total = número de macros executadas no dia (uma por combo CPF+UC). "
-                "Ativos = clientes com contrato consolidado/ativo confirmado. "
-                "Inativos = clientes excluídos, sem contrato ou marcados para reprocessar. "
+                "Ativos = instalações com titularidade confirmada (ATIVO=S). "
+                "Inativos = instalações sem contrato com o titular consultado (ATIVO=N). "
                 "A linha 'Total' ao final é a soma de todos os dias exibidos, considerando os filtros aplicados.",
                 style={"fontSize": "13px", "color": "#555", "marginBottom": "10px",
                        "background": "#e8f5e9", "padding": "8px 14px", "borderRadius": "6px",
@@ -272,7 +272,7 @@ app.layout = html.Div([
             html.P(
                 "Visão por CPF+UC (combinação): cada par CPF+UC conta separado — 1 CPF com 3 UCs = 3 combos. "
                 "Combos inéditas = pares que aparecem pela 1ª vez neste arquivo. "
-                "Processadas = combos que já rodaram na macro (consolidado + excluído + reprocessar). "
+                "Processadas = combos que já rodaram na macro (ativo + inativo). "
                 "Pendentes = combos que nunca rodaram.",
                 style={"fontSize": "13px", "color": "#555", "marginBottom": "10px",
                        "background": "#e3f2fd", "padding": "8px 14px", "borderRadius": "6px",
@@ -291,8 +291,7 @@ app.layout = html.Div([
                     {"if": {"column_id": "arquivo"}, "textAlign": "left", "minWidth": "160px", "maxWidth": "220px"},
                     {"if": {"column_id": "data_carga"}, "minWidth": "80px", "maxWidth": "90px"},
                     {"if": {"column_id": "pct_combos_ativas"}, "minWidth": "50px", "maxWidth": "65px"},
-                    {"if": {"column_id": "pct_combos_excluidas"}, "minWidth": "50px", "maxWidth": "65px"},
-                    {"if": {"column_id": "pct_combos_reprocessar"}, "minWidth": "50px", "maxWidth": "65px"},
+                    {"if": {"column_id": "pct_combos_inativas"}, "minWidth": "50px", "maxWidth": "65px"},
                 ],
                 style_header={"backgroundColor": "#3949ab", "color": "white",
                                "fontWeight": "bold", "fontFamily": "Roboto", "fontSize": "11px",
@@ -481,10 +480,8 @@ def atualizar_dashboard(filtro_mes, resumo_sel, filtro_empresa, filtro_arquivo, 
         {"name": "Pendentes",            "id": "combos_pendentes"},
         {"name": "Ativas",               "id": "combos_ativas"},
         {"name": "% Ativas",             "id": "pct_combos_ativas"},
-        {"name": "Excluídas",            "id": "combos_excluidas"},
-        {"name": "% Excluídas",          "id": "pct_combos_excluidas"},
-        {"name": "Reprocessar",          "id": "combos_reprocessar"},
-        {"name": "% Reprocessar",        "id": "pct_combos_reprocessar"},
+        {"name": "Inativas",             "id": "combos_inativas"},
+        {"name": "% Inativas",           "id": "pct_combos_inativas"},
     ]
 
     # Colunas de cobertura

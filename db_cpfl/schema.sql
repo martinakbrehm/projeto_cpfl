@@ -16,16 +16,13 @@ USE bd_Automacoes_time_dados_cpfl;
 
 -- ---------------------------------------------------------------------------
 -- Respostas CPFL
--- Mapeamento: (ATIVO + mensagem ERRO) → (resposta_id, status em tabela_macros_cpfl)
 --
---   id | mensagem                                                     | status
---   ---+--------------------------------------------------------------+-----------
---    1 | Titularidade confirmada                                      | consolidado
---    2 | Instalação inativa                                           | reprocessar
---    3 | Informações digitadas não pertencem ao atual titular         | excluido
---    4 | CPF/CNPJ não cadastrado na instalação                        | excluido
---    5 | Aguardando processamento                                     | pendente
---    6 | ERRO (falha de comunicação / resposta desconhecida)          | reprocessar
+--   id | mensagem                                                                          | status
+--   ---+-----------------------------------------------------------------------------------+--------
+--    1 | Instalacao ativa                                                                  | ativo
+--    2 | Instalacao inativa                                                                | inativo
+--    3 | Informacoes digitadas nao pertencem ao atual titular da instalacao                | inativo
+--    4 | Aguardando processamento                                                          | pendente
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS respostas (
   id       TINYINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -35,12 +32,10 @@ CREATE TABLE IF NOT EXISTS respostas (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 INSERT INTO respostas (id, mensagem, status) VALUES
-  (1, 'Titularidade confirmada',                                          'consolidado'),
-  (2, 'Instalação inativa',                                               'reprocessar'),
-  (3, 'Informações digitadas não pertencem ao atual titular da instalação','excluido'),
-  (4, 'CPF/CNPJ não cadastrado na instalação',                            'excluido'),
-  (5, 'Aguardando processamento',                                          'pendente'),
-  (6, 'ERRO',                                                              'reprocessar')
+  (1, 'Instala\u00e7\u00e3o ativa',                                                                               'ativo'),
+  (2, 'Instala\u00e7\u00e3o inativa',                                                                             'inativo'),
+  (3, 'Informa\u00e7\u00f5es digitadas n\u00e3o pertencem ao atual titular da instala\u00e7\u00e3o', 'inativo'),
+  (4, 'Aguardando processamento',                                                          'pendente')
 ON DUPLICATE KEY UPDATE mensagem = VALUES(mensagem), status = VALUES(status);
 
 
@@ -105,14 +100,16 @@ ALTER TABLE cliente_uc
 --   - distribuidora_id        — não necessário (banco é exclusivo CPFL)
 --   - qtd_faturas / valor_debito / valor_credito / etc.
 --       removidos (CPFL não retorna dados financeiros)
+--
+-- Status possíveis: pendente | processando | ativo | inativo
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tabela_macros_cpfl (
   id            INT NOT NULL AUTO_INCREMENT,
   cliente_id    INT NOT NULL,
   cliente_uc_id INT DEFAULT NULL,
-  resposta_id   TINYINT UNSIGNED DEFAULT 5,  -- default: pendente
-  pn            VARCHAR(20) DEFAULT NULL,    -- Número do Parceiro
-  status        ENUM('pendente','processando','reprocessar','consolidado','excluido')
+  resposta_id   TINYINT UNSIGNED DEFAULT 4,  -- default: pendente
+  pn            VARCHAR(20) DEFAULT NULL,    -- Numero do Parceiro
+  status        ENUM('pendente','processando','ativo','inativo')
                 NOT NULL DEFAULT 'pendente',
   extraido      TINYINT(1) NOT NULL DEFAULT 0,
   data_criacao  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -212,7 +209,7 @@ CREATE TABLE IF NOT EXISTS staging_import_rows (
 -- Views
 -- ---------------------------------------------------------------------------
 
--- Automação: por CPF+UC retorna o registro mais relevante (pendente ou reprocessar)
+-- Automação: por CPF+UC retorna o registro mais recente com status pendente
 CREATE OR REPLACE VIEW view_cpfl_macros_automacao AS
 SELECT vm.*
 FROM (
@@ -223,18 +220,17 @@ FROM (
     ROW_NUMBER() OVER (
       PARTITION BY c.cpf, COALESCE(cu.uc, '')
       ORDER BY
-        (tm.status = 'pendente') DESC,
         tm.data_update DESC,
         tm.id DESC
     ) AS rn
   FROM tabela_macros_cpfl tm
   JOIN  clientes    c  ON c.id  = tm.cliente_id
   LEFT JOIN cliente_uc cu ON cu.id = tm.cliente_uc_id
-  WHERE tm.status IN ('pendente','reprocessar')
+  WHERE tm.status = 'pendente'
 ) vm
 WHERE vm.rn = 1;
 
--- Consolidados (resultado final bem-sucedido)
+-- Ativos (titularidade confirmada)
 CREATE OR REPLACE VIEW view_cpfl_macros_consolidados AS
 SELECT
   tm.id,
@@ -248,7 +244,7 @@ SELECT
 FROM tabela_macros_cpfl tm
 JOIN  clientes   c  ON c.id  = tm.cliente_id
 LEFT JOIN cliente_uc cu ON cu.id = tm.cliente_uc_id
-WHERE tm.status = 'consolidado';
+WHERE tm.status = 'ativo';
 
 
 -- ---------------------------------------------------------------------------
