@@ -23,7 +23,7 @@ import os
 import shutil
 from pathlib import Path
 import pymysql
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Caminhos
 HERE = Path(__file__).resolve().parent
@@ -60,6 +60,10 @@ class SimpleRunner:
         # Processados hoje
         self.hoje_label = tk.Label(root, text="Processados hoje: 0", font=("Arial", 10))
         self.hoje_label.pack(pady=5)
+
+        # Projeção diária
+        self.proj_label = tk.Label(root, text="Projeção diária: 0", font=("Arial", 10))
+        self.proj_label.pack(pady=5)
 
         # Botão
         self.button = tk.Button(root, text="Iniciar", command=self.toggle, font=("Arial", 12), bg="green", fg="white")
@@ -121,11 +125,19 @@ class SimpleRunner:
             hoje_count = cursor.fetchone()[0]
             self.hoje_label.config(text=f"Processados hoje: {hoje_count}")
 
+            # Projeção diária: processados na última hora * 24
+            uma_hora_atras = datetime.now() - timedelta(hours=1)
+            cursor.execute("SELECT COUNT(*) FROM tabela_macros_cpfl WHERE data_extracao >= %s", (uma_hora_atras,))
+            ult_hora = cursor.fetchone()[0]
+            proj = ult_hora * 24
+            self.proj_label.config(text=f"Projeção diária: {proj}")
+
             cursor.close()
             conn.close()
         except Exception as e:
             self.lote_label.config(text="Lote atual: Erro DB")
             self.hoje_label.config(text="Processados hoje: Erro DB")
+            self.proj_label.config(text="Projeção diária: Erro DB")
 
         if self.process:
             if self.process.poll() is None:
