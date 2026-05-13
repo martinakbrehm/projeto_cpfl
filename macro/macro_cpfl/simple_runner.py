@@ -5,13 +5,14 @@ simple_runner.py - Executor Simples para Macro CPFL
 Interface minimalista para iniciar/parar o orquestrador da macro CPFL.
 
 - Mostra status (ativo/inativo)
+- Lote atual (registros em processamento)
+- Processados hoje
+- Projeção diária (baseada na última hora)
 - Botão para iniciar/parar
-- Executa em background
-- Leve e cross-platform
 
 Uso:
     python simple_runner.py
-    # Para executável: pyinstaller --onefile --windowed simple_runner.py
+    # Para exe: pyinstaller --onefile simple_runner.py
 """
 
 import tkinter as tk
@@ -33,13 +34,9 @@ PYTHON_EXE = sys.executable
 # Para exe, usar python3 do sistema para subprocess
 if getattr(sys, 'frozen', False):
     PYTHON_EXE = shutil.which('python3') or shutil.which('python') or 'python3'
-
-# Para exe, ajustar caminhos
-if getattr(sys, 'frozen', False):
-    # Se é exe, HERE é dist, então subir para projeto
+    # Ajustar caminhos para exe
     PROJETO_DIR = HERE.parent.parent.parent
     SCRIPT_ORQUESTRADOR = PROJETO_DIR / "macro" / "macro_cpfl" / "executar_automatico.py"
-    # Adicionar projeto ao path para importar config
     sys.path.insert(0, str(PROJETO_DIR))
 
 class SimpleRunner:
@@ -135,9 +132,11 @@ class SimpleRunner:
             cursor.close()
             conn.close()
         except Exception as e:
+            error_msg = f"Erro DB: {str(e)}"
             self.lote_label.config(text="Lote atual: Erro DB")
             self.hoje_label.config(text="Processados hoje: Erro DB")
             self.proj_label.config(text="Projeção diária: Erro DB")
+            messagebox.showerror("Erro de Banco", error_msg)
 
         if self.process:
             if self.process.poll() is None:
