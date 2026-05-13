@@ -20,23 +20,46 @@ import subprocess
 import threading
 import sys
 import os
+import shutil
 from pathlib import Path
+import pymysql
+from datetime import datetime
 
 # Caminhos
 HERE = Path(__file__).resolve().parent
 SCRIPT_ORQUESTRADOR = HERE / "executar_automatico.py"
 PYTHON_EXE = sys.executable
 
+# Para exe, usar python3 do sistema para subprocess
+if getattr(sys, 'frozen', False):
+    PYTHON_EXE = shutil.which('python3') or shutil.which('python') or 'python3'
+
+# Para exe, ajustar caminhos
+if getattr(sys, 'frozen', False):
+    # Se é exe, HERE é dist, então subir para projeto
+    PROJETO_DIR = HERE.parent.parent.parent
+    SCRIPT_ORQUESTRADOR = PROJETO_DIR / "macro" / "macro_cpfl" / "executar_automatico.py"
+    # Adicionar projeto ao path para importar config
+    sys.path.insert(0, str(PROJETO_DIR))
+
 class SimpleRunner:
     def __init__(self, root):
         self.root = root
         self.root.title("Macro CPFL - Executor Simples")
-        self.root.geometry("300x150")
+        self.root.geometry("350x200")
         self.root.resizable(False, False)
 
         # Status
         self.status_label = tk.Label(root, text="Status: Inativo", font=("Arial", 12))
-        self.status_label.pack(pady=20)
+        self.status_label.pack(pady=10)
+
+        # Lote atual
+        self.lote_label = tk.Label(root, text="Lote atual: Nenhum", font=("Arial", 10))
+        self.lote_label.pack(pady=5)
+
+        # Processados hoje
+        self.hoje_label = tk.Label(root, text="Processados hoje: 0", font=("Arial", 10))
+        self.hoje_label.pack(pady=5)
 
         # Botão
         self.button = tk.Button(root, text="Iniciar", command=self.toggle, font=("Arial", 12), bg="green", fg="white")
@@ -82,6 +105,28 @@ class SimpleRunner:
         messagebox.showinfo("Parado", "Orquestrador parado!")
 
     def update_status(self):
+        try:
+            from config import db_cpfl
+            conn = pymysql.connect(**db_cpfl())
+            cursor = conn.cursor()
+
+            # Lote atual: registros em processando
+            cursor.execute("SELECT COUNT(*) FROM tabela_macros_cpfl WHERE status = 'processando'")
+            lote_atual = cursor.fetchone()[0]
+            self.lote_label.config(text=f"Lote atual: {lote_atual} registros")
+
+            # Processados hoje
+            hoje = datetime.now().date()
+            cursor.execute("SELECT COUNT(*) FROM tabela_macros_cpfl WHERE DATE(data_extracao) = %s", (hoje,))
+            hoje_count = cursor.fetchone()[0]
+            self.hoje_label.config(text=f"Processados hoje: {hoje_count}")
+
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            self.lote_label.config(text="Lote atual: Erro DB")
+            self.hoje_label.config(text="Processados hoje: Erro DB")
+
         if self.process:
             if self.process.poll() is None:
                 self.running = True
@@ -91,10 +136,9 @@ class SimpleRunner:
                 self.running = False
                 self.status_label.config(text="Status: Inativo")
                 self.button.config(text="Iniciar", bg="green")
-        self.root.after(2000, self.update_status)  # Atualizar a cada 2s
+        self.root.after(5000, self.update_status)  # Atualizar a cada 5s
 
 if __name__ == "__main__":
     root = tk.Tk()
     app = SimpleRunner(root)
-    root.mainloop()</content>
-<parameter name="filePath">c:\Users\marti\Desktop\Projetos Martina\projeto_orquestracao_cpfl\macro\macro_cpfl\simple_runner.py
+    root.mainloop()
