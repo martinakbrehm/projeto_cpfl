@@ -36,6 +36,7 @@ class Scraping:
             options.add_argument("--disable-dev-shm-usage") # Evita problemas de memória em ambientes limitados
             options.add_argument("--disable-popup-blocking")  # Impede pop-ups indesejados
             options.add_argument("--disable-save-password-bubble") # Desabilita o pop-up de salvar senha
+            options.add_argument("--headless") # Executa sem interface gráfica
 
             driver = webdriver.Chrome(service=service, options=options)
             return driver
