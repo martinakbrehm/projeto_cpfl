@@ -47,21 +47,44 @@ from config import db_cpfl  # noqa: E402
 DB_CONFIG = db_cpfl(autocommit=False, read_timeout=600, write_timeout=600)
 
 RESPOSTA_PENDENTE = 4   # id em `respostas` -> 'Aguardando processamento'
-BATCH             = 50_000
+BATCH             = 5_000
 SEP               = "=" * 70
 
+# Índices secundários de tabela_macros_cpfl que são dropados antes do bulk
+# e recriados depois para máxima velocidade de INSERT.
+_MACROS_SECONDARY_INDEXES = [
+    ("idx_cpfl_macros_status_data",     "(status, data_update, cliente_id)"),
+    ("idx_cpfl_macros_cliente_data",    "(cliente_id, data_update)"),
+    ("idx_cpfl_macros_extraido_status", "(extraido, status, data_update)"),
+    ("idx_cpfl_macros_resposta",        "(resposta_id)"),
+    ("idx_cpfl_macros_data_extracao",   "(data_extracao)"),
+    ("idx_cpfl_macros_pn",              "(pn)"),
+]
+
 
 # ---------------------------------------------------------------------------
-# Retry para deadlocks
+# Bulk INSERT real (multi-values em uma única query)
+# pymysql.executemany faz 1 query por linha — inaceitável para 3.7M rows.
 # ---------------------------------------------------------------------------
-MAX_RETRIES    = 5
+MAX_RETRIES    = 3
 RETRIABLE_ERRS = {1213, 2013, 2006, 1205}
 
 
-def _executemany_retry(cur, conn, sql, rows):
+def _bulk_insert(cur, conn, sql_prefix: str, rows: list):
+    """
+    Executa um INSERT multi-values em uma única query.
+    sql_prefix: ex. "INSERT IGNORE INTO clientes (cpf, nome) VALUES"
+    rows: lista de tuplas com os valores
+    """
+    if not rows:
+        return
+    placeholders = "(" + ",".join(["%s"] * len(rows[0])) + ")"
+    values_clause = ",".join([placeholders] * len(rows))
+    flat = [v for row in rows for v in row]
+
     for tentativa in range(1, MAX_RETRIES + 1):
         try:
-            cur.executemany(sql, rows)
+            cur.execute(f"{sql_prefix} {values_clause}", flat)
             return
         except pymysql.err.OperationalError as e:
             errno = e.args[0] if e.args else 0
@@ -79,6 +102,12 @@ def _executemany_retry(cur, conn, sql, rows):
                 cur = conn.cursor()
             except Exception:
                 pass
+
+
+def _executemany_retry(cur, conn, sql, rows):
+    """Mantido por compatibilidade — delega ao bulk insert."""
+    prefix = sql.split("VALUES")[0].strip() + " VALUES"
+    _bulk_insert(cur, conn, prefix, rows)
 
 
 # ---------------------------------------------------------------------------
@@ -163,10 +192,37 @@ def conectar():
         cur.execute(f"SET SESSION {var} = 28800")
     cur.execute("SET SESSION net_read_timeout = 600")
     cur.execute("SET SESSION net_write_timeout = 600")
-    # Acelera bulk inserts: desativa checagens desnecessárias durante a carga
+    # Acelera bulk inserts
     cur.execute("SET SESSION foreign_key_checks = 0")
+    cur.execute("SET SESSION unique_checks = 0")
     cur.close()
     return conn
+
+
+def _drop_secondary_indexes(conn):
+    """Dropa índices secundários de tabela_macros_cpfl para acelerar bulk INSERT."""
+    cur = conn.cursor()
+    for nome, _ in _MACROS_SECONDARY_INDEXES:
+        try:
+            cur.execute(f"ALTER TABLE tabela_macros_cpfl DROP INDEX {nome}")
+        except Exception:
+            pass
+    conn.commit()
+    cur.close()
+    print("  [PERF] Índices secundários de tabela_macros_cpfl removidos para bulk insert.")
+
+
+def _recreate_secondary_indexes(conn):
+    """Recria os índices secundários após o bulk INSERT."""
+    cur = conn.cursor()
+    for nome, cols in _MACROS_SECONDARY_INDEXES:
+        try:
+            cur.execute(f"ALTER TABLE tabela_macros_cpfl ADD INDEX {nome} {cols}")
+        except Exception:
+            pass
+    conn.commit()
+    cur.close()
+    print("  [PERF] Índices secundários de tabela_macros_cpfl recriados.")
 
 
 def lookup_chunk(cur, cpfs: set, ucs_por_cpf: dict) -> tuple[dict, dict, set, set, set]:
@@ -267,7 +323,6 @@ def processar_staging(conn, staging_id: int, dry_run: bool) -> dict:
     cur_w = conn.cursor()
     df_validas = df[df.index.isin(valid_rows.keys())]
     all_idxs   = list(df_validas.index)
-    all_processed_idxs: list = []  # acumula todos os idx processados no arquivo
 
     for chunk_start in range(0, len(all_idxs), BATCH):
         chunk_idxs = all_idxs[chunk_start: chunk_start + BATCH]
@@ -382,7 +437,7 @@ def processar_staging(conn, staging_id: int, dry_run: bool) -> dict:
             uc_id = uc_map.get((cid_k, d["uc"])) or 0
             chave = (cid_k, uc_id)
             if chave not in macros_set:
-                rows_macros.append((cid, uc_id or None, RESPOSTA_PENDENTE, data_criacao))
+                rows_macros.append((cid, uc_id or None, RESPOSTA_PENDENTE, 'pendente', data_criacao))
                 macros_set.add(chave)
                 stats["macros_novas"] += 1
 
@@ -390,7 +445,7 @@ def processar_staging(conn, staging_id: int, dry_run: bool) -> dict:
             _executemany_retry(cur_w, conn,
                 "INSERT INTO tabela_macros_cpfl "
                 "(cliente_id, cliente_uc_id, resposta_id, status, data_criacao) "
-                "VALUES (%s,%s,%s,'pendente',%s)",
+                "VALUES (%s,%s,%s,%s,%s)",
                 rows_macros,
             )
 
@@ -447,12 +502,20 @@ def processar_staging(conn, staging_id: int, dry_run: bool) -> dict:
                 rows_ends,
             )
 
-        # ── FASE 6: checkpoint local (sem UPDATE por linha) ────────────
-        chunk_processed = [d["idx"] for d in parsed_novo]
-        stats["processadas"] += len(chunk_processed)
-        all_processed_idxs.extend(chunk_processed)
+        # ── FASE 6: checkpoint por batch ─────────────────────────────
+        # Marca TODAS as linhas do chunk (incluindo duplicatas já existentes)
+        chunk_processed = list(chunk_idxs)
+        stats["processadas"] += len(parsed_novo)  # conta só as realmente novas
 
         if not dry_run:
+            conn.commit()
+            # Marca processed_at imediatamente após o commit do batch
+            ph = ",".join(["%s"] * len(chunk_processed))
+            cur_w.execute(
+                f"UPDATE staging_import_rows SET processed_at=NOW() "
+                f"WHERE staging_id=%s AND row_idx IN ({ph})",
+                [staging_id] + chunk_processed,
+            )
             conn.commit()
 
         pct = stats["processadas"] / len(valid_rows) * 100
@@ -465,25 +528,14 @@ def processar_staging(conn, staging_id: int, dry_run: bool) -> dict:
             f"  end={stats['enderecos']}"
         )
 
-    # ── Marcar processed_at em lote único no final do arquivo ──────────
-    if not dry_run and all_processed_idxs:
-        print(f"  [INFO] Marcando {len(all_processed_idxs):,} linhas como processed_at...")
-        MARK_BATCH = 10_000
-        for i in range(0, len(all_processed_idxs), MARK_BATCH):
-            sub = all_processed_idxs[i: i + MARK_BATCH]
-            ph = ",".join(["%s"] * len(sub))
-            cur_w.execute(
-                f"UPDATE staging_import_rows SET processed_at=NOW() "
-                f"WHERE staging_id=%s AND row_idx IN ({ph})",
-                [staging_id] + sub,
-            )
-            conn.commit()
+    # ── Atualiza contador final do staging ──────────────────────────────────
+    if not dry_run:
         cur_w.execute(
             "UPDATE staging_imports SET rows_success=%s WHERE id=%s",
             (stats["processadas"], staging_id),
         )
         conn.commit()
-        print(f"  [INFO] processed_at marcado.")
+        print(f"  [INFO] processed_at marcado em {stats['processadas']:,} linhas.")
 
     cur_w.close()
     return stats
@@ -537,12 +589,18 @@ def main():
               ("clientes_novos", "uc_novas", "macros_novas",
                "telefones", "enderecos", "processadas", "erros")}
 
-    for sid in ids:
-        stats = processar_staging(conn, sid, args.dry_run)
-        for k in totais:
-            totais[k] += stats.get(k, 0)
+    if not args.dry_run:
+        _drop_secondary_indexes(conn)
 
-    conn.close()
+    try:
+        for sid in ids:
+            stats = processar_staging(conn, sid, args.dry_run)
+            for k in totais:
+                totais[k] += stats.get(k, 0)
+    finally:
+        if not args.dry_run:
+            _recreate_secondary_indexes(conn)
+        conn.close()
 
     print(f"\n{SEP}")
     print("PASSO 02 CPFL CONCLUÍDO")

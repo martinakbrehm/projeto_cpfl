@@ -18,7 +18,7 @@ class Scraping:
     def instancia_driver():
         """Instancia o driver do Selenium WebDriver."""
         try:
-            service = Service(ChromeDriverManager().install())
+            service = Service(executable_path="chromedriver.exe")
             options = webdriver.ChromeOptions()
 
             prefs = {

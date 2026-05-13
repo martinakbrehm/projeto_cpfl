@@ -47,7 +47,7 @@ def interpretar(ativo: str | None, erro: str | None) -> tuple[int, str, str | No
         erro  : mensagem de erro (campo ERRO do CSV) ou '' / None
     """
     ativo_norm = (ativo or "").strip().upper()
-    erro_norm  = (erro  or "").strip()
+    erro_norm  = str(erro or "").strip()
 
     # Titularidade confirmada
     if ativo_norm == "S":
