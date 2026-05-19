@@ -20,9 +20,17 @@ class PortalGMP():
         """Inicia o driver do Selenium WebDriver."""
         self.driver = driver.instancia_driver()
         if not self.driver:
-            return False
-        # Maximiza a janela para garantir que todos os elementos sejam carregados corretamente
-        self.driver.maximize_window()
+            raise RuntimeError(
+                "[FATAL] Chrome não iniciou. Verifique:\n"
+                "  1. Chrome/Chromium está instalado?  (google-chrome --version)\n"
+                "  2. ChromeDriver compatível?  (chromedriver --version)\n"
+                "  3. No Linux: sudo apt install -y libnss3 libgbm1 libasound2 libatk-bridge2.0-0 libgtk-3-0\n"
+            )
+        # maximize_window pode falhar em headless Linux — usa set_window_size
+        try:
+            self.driver.maximize_window()
+        except Exception:
+            self.driver.set_window_size(1920, 1080)
         return True
     
     def navegar(self, url, atualizar_pagina=False):

@@ -18,39 +18,52 @@ class Scraping:
     def instancia_driver():
         """Instancia o driver do Selenium WebDriver."""
         try:
-            service = Service(executable_path="chromedriver.exe")
+            # Resolve caminho absoluto do chromedriver (junto a este arquivo)
+            _here = os.path.dirname(os.path.abspath(__file__))
+            _macro_dir = os.path.dirname(_here)
+
+            # Detecta OS: chromedriver.exe (Windows) ou chromedriver (Linux)
+            if os.name == 'nt':
+                _chromedriver = os.path.join(_macro_dir, "chromedriver.exe")
+            else:
+                _chromedriver = os.path.join(_macro_dir, "chromedriver")
+
+            if not os.path.exists(_chromedriver):
+                # Fallback: tenta no PATH do sistema
+                import shutil as _shutil
+                _chromedriver = _shutil.which("chromedriver") or "chromedriver"
+
+            print(f"[INFO] ChromeDriver: {_chromedriver}", flush=True)
+
+            service = Service(executable_path=_chromedriver)
             options = webdriver.ChromeOptions()
 
             prefs = {
-                "safebrowsing.enabled": True,  # Habilita o modo de navegação segura
-                "credentials_enable_service": False, # Desabilita o serviço de credenciais
-                "profile.password_manager_enabled": False, # Desabilita o gerenciador de senhas
+                "safebrowsing.enabled": True,
+                "credentials_enable_service": False,
+                "profile.password_manager_enabled": False,
             }
 
             options.add_experimental_option("prefs", prefs)
+            options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
+            options.add_experimental_option("useAutomationExtension", False)
 
-            options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"]) # Remove a notificação de automação e logs
-            options.add_experimental_option("useAutomationExtension", False) # Desabilita a extensão de automação
-
-            options.add_argument("--no-sandbox") # Evita problemas de permissão em alguns ambientes
-            options.add_argument("--disable-dev-shm-usage") # Evita problemas de memória em ambientes limitados
-            options.add_argument("--disable-popup-blocking")  # Impede pop-ups indesejados
-            options.add_argument("--disable-save-password-bubble") # Desabilita o pop-up de salvar senha
-            options.add_argument("--headless") # Executa sem interface gráfica
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-popup-blocking")
+            options.add_argument("--disable-save-password-bubble")
+            # NÃO usa headless — o portal GMP tem captcha que precisa interação manual
 
             driver = webdriver.Chrome(service=service, options=options)
             return driver
         except SessionNotCreatedException as e:
             if "only supports Chrome version" in str(e):
-                print(f"[ERRO] Versão do Chrome incompatível com o WebDriver: atualize seu Chome")
-                logging.error("Erro de SessionNotCreatedException ao iniciar o WebDriver", exc_info=True)
+                print(f"[ERRO] Versão do Chrome incompatível com o ChromeDriver.")
             else:
-                print(f"[ERRO] Falha ao iniciar o WebDriver: verifique o arquivo de log para mais detalhes.")
-                logging.error("Erro de SessionNotCreatedException ao iniciar o WebDriver", exc_info=True)
+                print(f"[ERRO] SessionNotCreatedException: {e}")
             return None
         except Exception as e:
-            print(f"[ERRO] Falha ao iniciar o WebDriver: verifique o arquivo de log para mais detalhes.")
-            logging.error("Erro ao iniciar o WebDriver", exc_info=True)
+            print(f"[ERRO] Falha ao iniciar o Chrome: {e}")
             return None
 
     @staticmethod

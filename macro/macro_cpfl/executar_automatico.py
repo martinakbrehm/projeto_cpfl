@@ -38,11 +38,28 @@ PROJETO_DIR = HERE.parents[1]               # raiz do projeto
 MACRO_DIR   = HERE / "valida_pn_gmp-main"
 DADOS_DIR   = HERE.parent / "dados_cpfl"    # macro/dados_cpfl/
 
-# Python: usa venv do valida_pn_gmp-main se existir, senão o do sistema
-_venv_py    = MACRO_DIR / "venv" / "Scripts" / "python.exe"
-_sys_py     = shutil.which("python") or shutil.which("python3") or sys.executable
-MACRO_PY    = str(_venv_py) if _venv_py.exists() else _sys_py
-ETL_PY      = _sys_py    # Python do sistema tem pymysql/pandas
+# Python: usa venv local (macro_cpfl/venv) para TUDO — banco + selenium
+# Prioridade: venv local > venv do valida_pn_gmp-main > python do sistema
+# Detecta OS para path do venv
+import platform
+_IS_WIN = platform.system() == "Windows"
+_VENV_BIN = "Scripts" if _IS_WIN else "bin"
+_PY_NAME  = "python.exe" if _IS_WIN else "python"
+
+_venv_local = HERE / "venv" / _VENV_BIN / _PY_NAME
+_venv_macro = MACRO_DIR / "venv" / _VENV_BIN / _PY_NAME
+_sys_py     = shutil.which("python3") or shutil.which("python") or sys.executable
+
+if _venv_local.exists():
+    _PYTHON = str(_venv_local)
+elif _venv_macro.exists():
+    _PYTHON = str(_venv_macro)
+else:
+    _PYTHON = _sys_py
+
+# Usa o MESMO Python para tudo (garante que pymysql+pandas+selenium estão juntos)
+MACRO_PY = _PYTHON
+ETL_PY   = _PYTHON
 
 SCRIPT_MACRO   = MACRO_DIR / "executar_cpfl.py"
 SCRIPT_EXTRACT = PROJETO_DIR / "etl" / "extraction" / "macro_cpfl" / "03_buscar_lote_cpfl.py"

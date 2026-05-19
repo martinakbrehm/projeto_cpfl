@@ -23,6 +23,7 @@ dados/
 # Macro CPFL -- .env interno com credenciais GMP
 macro/macro_cpfl/valida_pn_gmp-main/.env
 macro/macro_cpfl/valida_pn_gmp-main/chromedriver.exe
+macro/macro_cpfl/valida_pn_gmp-main/chromedriver
 
 # Macro -- todos os arquivos de dados gerados pelo ciclo (lotes, resultados, arquivos)
 macro/dados/*.csv

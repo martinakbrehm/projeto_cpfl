@@ -1,7 +1,0 @@
-build/
-.venv/
-__pycache__/
-*.pyc
-ValidaPN_GMP.egg-info/
-dist/
-.env

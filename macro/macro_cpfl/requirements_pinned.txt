@@ -1,0 +1,19 @@
+# =============================================================================
+# requirements_pinned.txt  —  Versões EXATAS testadas e funcionais
+# Projeto: Orquestrador Macro CPFL (banco + selenium)
+# Python 3.12.x
+# =============================================================================
+
+# --- Selenium (automação web) ---
+selenium==4.35.0
+webdriver-manager==4.0.2
+
+# --- Banco de dados (MySQL/MariaDB) ---
+PyMySQL==1.1.2
+cryptography==46.0.2        # Necessário para caching_sha2_password (MySQL 8+)
+
+# --- Dados ---
+pandas==2.3.1
+
+# --- Utilitários ---
+python-dotenv==1.1.1
