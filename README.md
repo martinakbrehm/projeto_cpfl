@@ -174,6 +174,19 @@ python etl/load/macro_cpfl/02_processar_staging_cpfl.py
 
 Normaliza CPF (LPAD 11 dígitos), valida UC, faz upsert em `clientes` e `cliente_uc`, enfileira registros `pendente` em `tabela_macros_cpfl`.
 
+**Otimização de índices (bulk insert):** antes de inserir em massa na `tabela_macros_cpfl`, o script dropa os 6 índices secundários da tabela para evitar que o MySQL atualize cada índice a cada INSERT. Ao final do bulk, recria todos os índices de uma vez — isso é ordens de magnitude mais rápido para cargas de milhões de registros. Os índices dropados/recriados são os mesmos definidos no `schema.sql`:
+
+| Índice | Colunas |
+|--------|---------|
+| `idx_cpfl_macros_status_data` | (status, data_update, cliente_id) |
+| `idx_cpfl_macros_cliente_data` | (cliente_id, data_update) |
+| `idx_cpfl_macros_extraido_status` | (extraido, status, data_update) |
+| `idx_cpfl_macros_resposta` | (resposta_id) |
+| `idx_cpfl_macros_data_extracao` | (data_extracao) |
+| `idx_cpfl_macros_pn` | (pn) |
+
+Esse processo é idempotente: se o script for interrompido, na próxima execução ele tenta dropar (ignora se não existem) e ao final recria.
+
 ### Etapa 3 — Rodar a macro (ciclo contínuo)
 
 **Pelo painel (recomendado):**
