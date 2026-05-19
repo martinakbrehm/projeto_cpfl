@@ -91,39 +91,56 @@ def refresh_dashboard_macros_agg() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Tabela materializada de arquivos — populada por sp_refresh_dashboard_arquivos_agg
-# SELECT simples em tabela física indexada: latência <1ms.
-# A query complexa (ROW_NUMBER + staging_import_rows) roda apenas na stored
-# procedure, nunca diretamente no dashboard.
+# Estatísticas por arquivo de staging
+# Usa staging_import_rows para contar combos distintas por arquivo (correto e
+# independente de quando o passo 02 rodou — antes o JOIN por data falhava se
+# o processamento ocorria em dias diferentes do import).
 # ---------------------------------------------------------------------------
-_SQL_STATS_ARQUIVO_MAT = """
+_SQL_STATS_ARQUIVO = """
     SELECT
-        si.filename                                      AS arquivo,
-        DATE(si.created_at)                              AS data_carga,
-        si.rows_success                                  AS cpfs_no_arquivo,
-        COUNT(DISTINCT tm.cliente_id)                    AS cpfs_processados,
-        SUM(IF(tm.status='ativo',  1, 0))                AS ativos,
-        SUM(IF(tm.status='inativo',1, 0))                AS inativos,
-        COUNT(DISTINCT tm.cliente_id)                    AS cpfs_ineditos,
-        COUNT(*)                                         AS ucs_ineditas,
-        SUM(IF(tm.status NOT IN ('pendente','processando'),1,0)) AS combos_processadas,
-        SUM(IF(tm.status='ativo',  1, 0))                AS combos_ativas,
-        SUM(IF(tm.status='inativo',1, 0))                AS combos_inativas,
+        si.filename                          AS arquivo,
+        DATE(si.created_at)                  AS data_carga,
+        si.rows_success                      AS cpfs_no_arquivo,
+        COALESCE(cc.distinct_cpfs, 0)        AS cpfs_processados,
+        0                                    AS ativos,
+        0                                    AS inativos,
+        COALESCE(cc.distinct_cpfs, 0)        AS cpfs_ineditos,
+        COALESCE(cc.distinct_combos, 0)      AS ucs_ineditas,
+        0                                    AS combos_processadas,
+        0                                    AS combos_ativas,
+        0                                    AS combos_inativas,
         0 AS ineditos_processados,
         0 AS ineditos_ativos,
         0 AS ineditos_inativos
     FROM staging_imports si
-    LEFT JOIN tabela_macros_cpfl tm
-           ON DATE(tm.data_criacao) = DATE(si.created_at)
+    LEFT JOIN (
+        SELECT
+            staging_id,
+            COUNT(DISTINCT normalized_cpf) AS distinct_cpfs,
+            COUNT(DISTINCT normalized_cpf, normalized_uc) AS distinct_combos
+        FROM staging_import_rows
+        WHERE validation_status = 'valid'
+        GROUP BY staging_id
+    ) cc ON cc.staging_id = si.id
     WHERE si.status = 'completed'
-    GROUP BY si.id, si.filename, si.created_at, si.rows_success
     ORDER BY si.created_at DESC
+"""
+
+# Status global de processamento das macros (não dependente de staging)
+_SQL_MACROS_STATUS_GLOBAL = """
+    SELECT
+        SUM(IF(status NOT IN ('pendente','processando'), 1, 0)) AS combos_processadas,
+        SUM(IF(status = 'ativo', 1, 0))  AS combos_ativas,
+        SUM(IF(status = 'inativo', 1, 0)) AS combos_inativas,
+        COUNT(*) AS total_macros
+    FROM tabela_macros_cpfl
 """
 
 
 def carregar_stats_por_arquivo() -> pd.DataFrame:
     """Retorna estatísticas de todos os arquivos de staging.
-    Lê da tabela materializada dashboard_arquivos_agg (SELECT simples).
+    Conta combos distintas por arquivo via staging_import_rows, e
+    distribui proporcionalmente o status de processamento das macros.
     Cacheado em memória por _CACHE_STATS_TTL segundos.
     """
     cached = _CACHE_STATS.get("stats")
@@ -135,55 +152,41 @@ def carregar_stats_por_arquivo() -> pd.DataFrame:
     try:
         conn = pymysql.connect(**DB_CONFIG)
         with conn.cursor() as cur:
-            cur.execute(_SQL_STATS_ARQUIVO_MAT)
+            # Per-file distinct combos
+            cur.execute(_SQL_STATS_ARQUIVO)
             cols = [d[0] for d in cur.description]
             rows = cur.fetchall()
+
+            # Global macro status
+            cur.execute(_SQL_MACROS_STATUS_GLOBAL)
+            global_row = cur.fetchone()
         conn.close()
+
         df = pd.DataFrame(rows, columns=cols)
-        # Não cachear DataFrames vazios — podem ser resultado de race condition
-        # com o refresh (TRUNCATE + INSERT) da stored procedure
+        if df.empty:
+            return df
+
+        # Converte colunas numéricas (podem vir como Decimal do MySQL)
+        for col in df.columns:
+            if col not in ("arquivo", "data_carga"):
+                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+
+        # Distribui os status globais proporcionalmente baseado em ucs_ineditas
+        total_combos_all = int(df["ucs_ineditas"].sum())
+        if total_combos_all > 0 and global_row:
+            g_processadas = int(global_row[0] or 0)
+            g_ativas = int(global_row[1] or 0)
+            g_inativas = int(global_row[2] or 0)
+            for col, g_val in [("combos_processadas", g_processadas),
+                               ("combos_ativas", g_ativas),
+                               ("combos_inativas", g_inativas)]:
+                df[col] = (df["ucs_ineditas"] / total_combos_all * g_val).round(0).astype(int)
+
         if not df.empty:
             _CACHE_STATS["stats"] = (df, time.time())
         return df.copy()
     except Exception as e:
         print(f"[ERRO] carregar_stats_por_arquivo: {e}")
-        return pd.DataFrame()
-
-
-_SQL_COBERTURA = """
-    SELECT
-        si.filename          AS arquivo,
-        DATE(si.created_at)  AS data_carga,
-        si.rows_success      AS total_combos,
-        0                    AS combos_novas,
-        0                    AS combos_existentes
-    FROM staging_imports si
-    WHERE si.status = 'completed'
-    ORDER BY si.created_at DESC
-"""
-
-
-def carregar_cobertura() -> pd.DataFrame:
-    """Retorna tabela de novos vs existentes por arquivo de staging."""
-    cached = _CACHE_STATS.get("cobertura")
-    if cached is not None:
-        df_cached, ts = cached
-        if time.time() - ts < _CACHE_STATS_TTL:
-            return df_cached.copy()
-    try:
-        conn = pymysql.connect(**DB_CONFIG)
-        with conn.cursor() as cur:
-            cur.execute(_SQL_COBERTURA)
-            cols = [d[0] for d in cur.description]
-            rows = cur.fetchall()
-        conn.close()
-        df = pd.DataFrame(rows, columns=cols)
-        # Não cachear DataFrames vazios — race condition com TRUNCATE
-        if not df.empty:
-            _CACHE_STATS["cobertura"] = (df, time.time())
-        return df.copy()
-    except Exception as e:
-        print(f"[ERRO] carregar_cobertura: {e}")
         return pd.DataFrame()
 
 

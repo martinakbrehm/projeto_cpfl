@@ -188,32 +188,4 @@ def build_tabela_arquivos(granularidade: str = "combo") -> list:
     ]].to_dict("records")
 
 
-def build_tabela_cobertura() -> list:
-    """Retorna cobertura por arquivo contando combinações únicas de CPF+UC.
 
-    Regra: a unidade de contagem é o par (CPF, UC). Um mesmo CPF com UCs
-    diferentes gera combinações distintas. Linhas sem UC são excluídas.
-    Combinação 'nova' = aparece pela 1ª vez considerando todos os arquivos;
-    combinação 'existente' = já estava presente em arquivo anterior.
-    """
-    df = loader.carregar_cobertura()
-    if df is None or df.empty:
-        return []
-
-    for col in ["total_combos", "combos_novas", "combos_existentes"]:
-        df[col] = df[col].fillna(0).astype(int)
-
-    df["pct_novas"] = df.apply(
-        lambda r: f"{round(r['combos_novas'] / r['total_combos'] * 100, 1)}%"
-        if r["total_combos"] > 0 else "-", axis=1)
-    df["pct_existentes"] = df.apply(
-        lambda r: f"{round(r['combos_existentes'] / r['total_combos'] * 100, 1)}%"
-        if r["total_combos"] > 0 else "-", axis=1)
-
-    df["data_carga"] = df["data_carga"].astype(str)
-
-    return df[[
-        "arquivo", "data_carga",
-        "total_combos", "combos_novas", "pct_novas",
-        "combos_existentes", "pct_existentes",
-    ]].to_dict("records")

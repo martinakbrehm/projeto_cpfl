@@ -19,7 +19,7 @@ sys.path.insert(0, dashboard_dir)
 from dashboard import app
 
 if __name__ == '__main__':
-    print("🚀 Iniciando Dashboard de Macros Neo...")
-    print("🔐 Autenticação: usuário 'neo', senha 'dashboard2026'")
-    print("🌐 URL: http://127.0.0.1:8050")
+    print("Iniciando Dashboard CPFL...")
+    print("Autenticacao: usuario 'cpfl', senha 'dashboard2026'")
+    print("URL: http://127.0.0.1:8050")
     app.run(host='0.0.0.0', port=8050, debug=False, use_reloader=False)
