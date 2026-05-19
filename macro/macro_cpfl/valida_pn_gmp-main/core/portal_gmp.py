@@ -63,7 +63,12 @@ class PortalGMP():
         return "Default" in self.driver.current_url
     
     def login(self, usuario, senha):
-        """Realiza o login no Portal GMP."""
+        """Realiza o login no Portal GMP. Se já estiver logado, pula."""
+        # Se já está logado, não navega para login (evita pedir captcha novamente)
+        if self.verificar_sucesso_login():
+            print("Já logado no portal. Pulando login.")
+            return True
+
         self.em_processo_de_login = True
         self.navegar(self.url_login)
 
