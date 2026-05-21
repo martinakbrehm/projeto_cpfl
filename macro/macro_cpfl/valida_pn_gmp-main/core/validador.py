@@ -1,4 +1,5 @@
 import queue
+import random
 import time
 from core.portal_gmp import PortalGMP
 from core.gerenciador_dados import GerenciadorDados
@@ -73,6 +74,9 @@ class Validador:
 
                     dados_salvar = [linha['CPF'], linha['UC'], *resultado_busca]
                     self.dados.salvar_linha(dados_salvar)
+
+                    # Pausa humana entre consultas para evitar captchas
+                    time.sleep(random.uniform(2.0, 5.0))
 
                     break
 

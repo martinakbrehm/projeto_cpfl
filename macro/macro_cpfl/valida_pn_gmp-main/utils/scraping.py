@@ -114,15 +114,15 @@ class Scraping:
         return False
 
     @staticmethod
-    def espera_humana(min_s=0.4, max_s=1.2):
+    def espera_humana(min_s=1.5, max_s=4.0):
         """
         Espera um tempo aleatório entre min_s e max_s segundos.
-        Exemplo: espera_humana(0.5, 1.0)
+        Exemplo: espera_humana(1.5, 4.0)
         """
         time.sleep(random.uniform(min_s, max_s))
 
     @staticmethod
-    def digitar_humano(elemento, texto, min_delay=0.01, max_delay=0.03):
+    def digitar_humano(elemento, texto, min_delay=0.07, max_delay=0.18):
         for char in texto:
             elemento.send_keys(char)
             time.sleep(random.uniform(min_delay, max_delay))
