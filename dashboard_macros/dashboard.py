@@ -59,14 +59,19 @@ _REFRESH_HORARIOS = {8, 12, 17}
 def _executar_refresh_once():
     """Executa um único ciclo de refresh (usado pelo callback do interval e pelo scheduler)."""
     try:
-        loader.carregar_dados("macro")
-        loader.carregar_stats_por_arquivo()
         executar_refresh()
     except Exception as e:
         print(f"[WARN] Refresh falhou: {e}")
     finally:
         loader.invalidar_cache()
         print("[INFO] Cache invalidado após refresh")
+    # Pré-aquece o cache com dados frescos do banco (independente de browser aberto)
+    try:
+        loader.carregar_dados("macro")
+        loader.carregar_stats_por_arquivo()
+        print("[INFO] Cache pré-aquecido com dados atualizados")
+    except Exception as e:
+        print(f"[WARN] Falha ao pré-aquecer cache: {e}")
 
 
 def _refresh_bg():
