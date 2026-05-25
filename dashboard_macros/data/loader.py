@@ -12,7 +12,7 @@ DB_CONFIG = db_cpfl()
 
 _CACHE: dict = {}        # cache por tipo {'macro': df} — sem TTL, vive durante o processo
 _CACHE_STATS: dict = {}  # cache para stats_por_arquivo / cobertura
-_CACHE_STATS_TTL = 300   # segundos (5 min)
+_CACHE_STATS_TTL = 3600  # segundos (1 hora)
 
 # ---------------------------------------------------------------------------
 # Tabela materializada — populada pela stored procedure

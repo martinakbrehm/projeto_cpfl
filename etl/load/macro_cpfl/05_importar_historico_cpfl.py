@@ -194,6 +194,20 @@ def buscar_ja_processados(cur, cpfs: list[str]) -> set:
 # Processamento
 # ---------------------------------------------------------------------------
 
+def _reconectar() -> pymysql.connections.Connection:
+    """Cria uma nova conexao com o banco (usado apos timeout/desconexao)."""
+    import time as _time
+    for tentativa in range(1, 6):
+        try:
+            c = pymysql.connect(**DB_CONFIG)
+            print(f"  [RECONEXAO] Conectado (tentativa {tentativa})")
+            return c
+        except Exception as e:
+            print(f"  [RECONEXAO] Falha {tentativa}/5: {e}")
+            _time.sleep(5 * tentativa)
+    raise RuntimeError("Nao foi possivel reconectar ao banco apos 5 tentativas.")
+
+
 def processar_arquivo(conn, df: pd.DataFrame, nome: str,
                       dry_run: bool, verbose: bool) -> dict:
     cur = conn.cursor()
@@ -253,20 +267,34 @@ def processar_arquivo(conn, df: pd.DataFrame, nome: str,
         stats["inseridos"] += 1
 
         if len(batch_params) >= BATCH_INSERT:
-            try:
-                cur.executemany(SQL_INSERT_RESULTADO, batch_params)
-                conn.commit()
-                print(f"  [{stats['inseridos']:,}/{stats['total']:,}] commit parcial ({len(batch_params)} registros)...")
-                batch_params = []
-            except Exception as e:
-                conn.rollback()
-                stats["erros"] += len(batch_params)
-                stats["inseridos"] -= len(batch_params)
-                print(f"  [ERRO] batch falhou: {e}")
-                batch_params = []
+            tentativas = 0
+            while tentativas < 5:
+                try:
+                    conn.ping(reconnect=True)
+                    cur = conn.cursor()
+                    cur.executemany(SQL_INSERT_RESULTADO, batch_params)
+                    conn.commit()
+                    print(f"  [{stats['inseridos']:,}/{stats['total']:,}] commit parcial ({len(batch_params)} registros)...")
+                    batch_params = []
+                    break
+                except Exception as e:
+                    tentativas += 1
+                    print(f"  [ERRO] batch falhou (tentativa {tentativas}/5): {e}")
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    if tentativas >= 5:
+                        stats["erros"] += len(batch_params)
+                        stats["inseridos"] -= len(batch_params)
+                        batch_params = []
+                    else:
+                        import time as _t; _t.sleep(3 * tentativas)
 
     if batch_params and not dry_run:
         try:
+            conn.ping(reconnect=True)
+            cur = conn.cursor()
             cur.executemany(SQL_INSERT_RESULTADO, batch_params)
             conn.commit()
             print(f"  Commit final: {len(batch_params)} registros")

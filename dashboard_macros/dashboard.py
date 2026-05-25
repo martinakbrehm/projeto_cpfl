@@ -299,12 +299,8 @@ def atualizar_opcoes_filtros(tipo_macro, fornecedor, n_intervals):
     filtro_forn = fornecedor if fornecedor and fornecedor != "todos" else None
     # Se veio do interval, rodar refresh em background (cache será invalidado ao final do refresh)
     ctx = dash.callback_context
-    if ctx.triggered and ctx.triggered[0]["prop_id"] == "interval-refresh.n_intervals":
-        if n_intervals == 0:
-            # Primeira carga da página: invalida cache para garantir dados frescos do banco
-            loader.invalidar_cache()
-        else:
-            threading.Thread(target=_executar_refresh_once, daemon=True).start()
+    if ctx.triggered and ctx.triggered[0]["prop_id"] == "interval-refresh.n_intervals" and n_intervals > 0:
+        threading.Thread(target=_executar_refresh_once, daemon=True).start()
     df = loader.carregar_dados(tipo)
     if df.empty:
         loader.invalidar_cache(tipo)
