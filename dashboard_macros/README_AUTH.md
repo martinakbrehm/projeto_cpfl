@@ -9,13 +9,13 @@ O dashboard agora está protegido por autenticação básica.
 - **Senha**: `dashboard2026`
 
 ### Como Acessar:
-1. Abra o navegador em `http://127.0.0.1:8050` (local) ou a URL do Cloudflare
+1. Abra o navegador em `http://127.0.0.1:8051` (local) ou a URL do Cloudflare
 2. Quando solicitado, digite:
    - Usuário: `neo`
    - Senha: `dashboard2026`
 
 ### Para Deploy no Cloudflare:
-- Configure o túnel Cloudflare para apontar para `http://127.0.0.1:8050`
+- Configure o túnel Cloudflare para apontar para `http://127.0.0.1:8051`
 - A autenticação será solicitada automaticamente pelo navegador
 - Recomende usar HTTPS para proteger as credenciais
 

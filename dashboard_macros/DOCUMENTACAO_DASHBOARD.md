@@ -11,12 +11,12 @@ Dashboard interativo para monitoramento de resultados das automações de consul
 python -m dashboard_macros
 ```
 
-Acesse em: http://127.0.0.1:8050
+Acesse em: http://127.0.0.1:8051
 
-Para parar um processo travado na porta 8050 e reiniciar:
+Para parar um processo travado na porta 8051 e reiniciar:
 
 ```powershell
-Get-NetTCPConnection -LocalPort 8050 -ErrorAction SilentlyContinue |
+Get-NetTCPConnection -LocalPort 8051 -ErrorAction SilentlyContinue |
   ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
 Start-Sleep 2
 python -m dashboard_macros
@@ -176,7 +176,7 @@ Removida de `cliente_origem` (migration `20260409_drop_campanha_cliente_origem`)
 | "(sem resposta)" na distribuição               | `reprocessar` com `resposta_id=NULL`              | Migration + `AND m.resposta_id IS NOT NULL` no SQL         |
 | "Aguardando processamento" na distribuição      | `resposta_id=6` (pendente) vinculado a reprocessar | Migration + filtro `resposta_status != 'pendente'`        |
 | Percentuais não somam 100%                      | `STATUS_INATIVO = {"excluir"}` (typo)             | Corrigido para `{"excluido", "reprocessar"}`               |
-| Dashboard mostrando dados antigos               | Processo antigo rodando na porta 8050             | `Stop-Process` pelo PID antes de reiniciar                 |
+| Dashboard mostrando dados antigos               | Processo antigo rodando na porta 8051             | `Stop-Process` pelo PID antes de reiniciar                 |
 | `arquivo_origem` mostrando caminho completo     | `filename` tinha path Windows absoluto            | Migration `20260409_truncar_filename_staging`              |
 
 ---

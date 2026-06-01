@@ -264,6 +264,205 @@ END$$
 
 DELIMITER ;
 
+-- ---------------------------------------------------------------------------
+-- Tabelas materializadas para o dashboard
+-- Populadas pelas stored procedures sp_refresh_dashboard_*_agg().
+-- SELECT simples em tabelas indexadas: latência <1ms.
+-- ---------------------------------------------------------------------------
+
+-- Resumo diário de macros processadas (por dia × status × mensagem)
+CREATE TABLE IF NOT EXISTS dashboard_macros_agg (
+  id             INT NOT NULL AUTO_INCREMENT,
+  dia            DATE NOT NULL,
+  status         VARCHAR(50) NOT NULL,
+  mensagem       TEXT,
+  resposta_status VARCHAR(50) DEFAULT NULL,
+  empresa        VARCHAR(100) DEFAULT NULL,
+  fornecedor     VARCHAR(100) DEFAULT NULL,
+  arquivo_origem VARCHAR(255) DEFAULT NULL,
+  qtd            INT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  INDEX idx_dma_dia    (dia),
+  INDEX idx_dma_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Estatísticas por arquivo de staging (com distribuição proporcional de status)
+CREATE TABLE IF NOT EXISTS dashboard_arquivos_agg (
+  id                   INT NOT NULL AUTO_INCREMENT,
+  arquivo              VARCHAR(255) NOT NULL,
+  data_carga           DATE NOT NULL,
+  cpfs_no_arquivo      INT NOT NULL DEFAULT 0,
+  cpfs_processados     INT NOT NULL DEFAULT 0,
+  ativos               INT NOT NULL DEFAULT 0,
+  inativos             INT NOT NULL DEFAULT 0,
+  cpfs_ineditos        INT NOT NULL DEFAULT 0,
+  ucs_ineditas         INT NOT NULL DEFAULT 0,
+  combos_processadas   INT NOT NULL DEFAULT 0,
+  combos_ativas        INT NOT NULL DEFAULT 0,
+  combos_inativas      INT NOT NULL DEFAULT 0,
+  ineditos_processados INT NOT NULL DEFAULT 0,
+  ineditos_ativos      INT NOT NULL DEFAULT 0,
+  ineditos_inativos    INT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  INDEX idx_daa_arquivo    (arquivo),
+  INDEX idx_daa_data_carga (data_carga)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Cobertura por arquivo de staging (% do lote já processado)
+CREATE TABLE IF NOT EXISTS dashboard_cobertura_agg (
+  id                 INT NOT NULL AUTO_INCREMENT,
+  staging_id         INT NOT NULL,
+  arquivo            VARCHAR(255) NOT NULL,
+  data_carga         DATE NOT NULL,
+  ucs_ineditas       INT NOT NULL DEFAULT 0,
+  combos_processadas INT NOT NULL DEFAULT 0,
+  pct_cobertura      DECIMAL(5,2) NOT NULL DEFAULT 0.00,
+  PRIMARY KEY (id),
+  UNIQUE KEY ux_cobertura_staging (staging_id),
+  INDEX idx_dca_data_carga (data_carga)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+
+-- ---------------------------------------------------------------------------
+-- Stored procedures de refresh
+-- ---------------------------------------------------------------------------
+DELIMITER $$
+
+-- Refresh: resumo diário de macros
+CREATE PROCEDURE IF NOT EXISTS sp_refresh_dashboard_macros_agg()
+BEGIN
+  TRUNCATE TABLE dashboard_macros_agg;
+  INSERT INTO dashboard_macros_agg
+    (dia, status, mensagem, resposta_status, empresa, fornecedor, arquivo_origem, qtd)
+  SELECT
+    DATE(tm.data_update),
+    tm.status,
+    r.mensagem,
+    r.status,
+    NULL,
+    NULL,
+    NULL,
+    COUNT(*)
+  FROM tabela_macros_cpfl tm
+  JOIN respostas r ON r.id = tm.resposta_id
+  WHERE tm.status NOT IN ('pendente', 'processando')
+  GROUP BY DATE(tm.data_update), tm.status, r.mensagem, r.status
+  ORDER BY DATE(tm.data_update) DESC;
+END$$
+
+-- Refresh: estatísticas por arquivo (distribuição proporcional de status)
+CREATE PROCEDURE IF NOT EXISTS sp_refresh_dashboard_arquivos_agg()
+BEGIN
+  TRUNCATE TABLE dashboard_arquivos_agg;
+  INSERT INTO dashboard_arquivos_agg
+    (arquivo, data_carga, cpfs_no_arquivo, cpfs_processados,
+     ativos, inativos, cpfs_ineditos, ucs_ineditas,
+     combos_processadas, combos_ativas, combos_inativas,
+     ineditos_processados, ineditos_ativos, ineditos_inativos)
+  WITH per_file AS (
+    SELECT
+      si.id               AS staging_id,
+      si.filename         AS arquivo,
+      DATE(si.created_at) AS data_carga,
+      si.rows_success     AS cpfs_no_arquivo,
+      COALESCE(cc.distinct_cpfs,   0) AS distinct_cpfs,
+      COALESCE(cc.distinct_combos, 0) AS ucs_ineditas
+    FROM staging_imports si
+    LEFT JOIN (
+      SELECT
+        staging_id,
+        COUNT(DISTINCT normalized_cpf)                AS distinct_cpfs,
+        COUNT(DISTINCT normalized_cpf, normalized_uc) AS distinct_combos
+      FROM staging_import_rows
+      WHERE validation_status = 'valid'
+      GROUP BY staging_id
+    ) cc ON cc.staging_id = si.id
+    WHERE si.status = 'completed'
+  ),
+  global_totals AS (
+    SELECT
+      SUM(ucs_ineditas) AS total_ucs,
+      (SELECT COUNT(*) FROM tabela_macros_cpfl
+         WHERE status NOT IN ('pendente','processando')) AS g_processadas,
+      (SELECT COUNT(*) FROM tabela_macros_cpfl
+         WHERE status = 'ativo')                        AS g_ativas,
+      (SELECT COUNT(*) FROM tabela_macros_cpfl
+         WHERE status = 'inativo')                      AS g_inativas
+    FROM per_file
+  )
+  SELECT
+    pf.arquivo,
+    pf.data_carga,
+    pf.cpfs_no_arquivo,
+    pf.distinct_cpfs                                          AS cpfs_processados,
+    0                                                         AS ativos,
+    0                                                         AS inativos,
+    pf.distinct_cpfs                                          AS cpfs_ineditos,
+    pf.ucs_ineditas,
+    CASE WHEN gt.total_ucs > 0
+      THEN ROUND(pf.ucs_ineditas / gt.total_ucs * gt.g_processadas)
+      ELSE 0 END                                              AS combos_processadas,
+    CASE WHEN gt.total_ucs > 0
+      THEN ROUND(pf.ucs_ineditas / gt.total_ucs * gt.g_ativas)
+      ELSE 0 END                                              AS combos_ativas,
+    CASE WHEN gt.total_ucs > 0
+      THEN ROUND(pf.ucs_ineditas / gt.total_ucs * gt.g_inativas)
+      ELSE 0 END                                              AS combos_inativas,
+    0, 0, 0
+  FROM per_file pf
+  CROSS JOIN global_totals gt
+  ORDER BY pf.data_carga DESC;
+END$$
+
+-- Refresh: cobertura por arquivo (% do lote processado)
+CREATE PROCEDURE IF NOT EXISTS sp_refresh_dashboard_cobertura_agg()
+BEGIN
+  TRUNCATE TABLE dashboard_cobertura_agg;
+  INSERT INTO dashboard_cobertura_agg
+    (staging_id, arquivo, data_carga, ucs_ineditas, combos_processadas, pct_cobertura)
+  WITH per_file AS (
+    SELECT
+      si.id               AS staging_id,
+      si.filename         AS arquivo,
+      DATE(si.created_at) AS data_carga,
+      COALESCE(cc.distinct_combos, 0) AS ucs_ineditas
+    FROM staging_imports si
+    LEFT JOIN (
+      SELECT
+        staging_id,
+        COUNT(DISTINCT normalized_cpf, normalized_uc) AS distinct_combos
+      FROM staging_import_rows
+      WHERE validation_status = 'valid'
+      GROUP BY staging_id
+    ) cc ON cc.staging_id = si.id
+    WHERE si.status = 'completed'
+  ),
+  global_totals AS (
+    SELECT
+      SUM(ucs_ineditas) AS total_ucs,
+      (SELECT COUNT(*) FROM tabela_macros_cpfl
+         WHERE status NOT IN ('pendente','processando')) AS g_processadas
+    FROM per_file
+  )
+  SELECT
+    pf.staging_id,
+    pf.arquivo,
+    pf.data_carga,
+    pf.ucs_ineditas,
+    CASE WHEN gt.total_ucs > 0
+      THEN ROUND(pf.ucs_ineditas / gt.total_ucs * gt.g_processadas)
+      ELSE 0 END AS combos_processadas,
+    CASE WHEN pf.ucs_ineditas > 0 AND gt.total_ucs > 0
+      THEN ROUND(
+        (pf.ucs_ineditas / gt.total_ucs * gt.g_processadas) / pf.ucs_ineditas * 100,
+        2)
+      ELSE 0.00 END AS pct_cobertura
+  FROM per_file pf
+  CROSS JOIN global_totals gt;
+END$$
+
+DELIMITER ;
+
 -- =============================================================================
 -- FIM DO SCHEMA
 -- =============================================================================

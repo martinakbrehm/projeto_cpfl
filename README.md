@@ -35,7 +35,7 @@ Pipeline de orquestração end-to-end para automação da validação de titular
 │                      CAMADA ANALÍTICA                               │
 │  dashboard_macros_agg (tabela materializada)                        │
 │  dashboard_arquivos_agg / dashboard_cobertura_agg                   │
-│  Dashboard Dash/Plotly  →  http://127.0.0.1:8050                    │
+│  Dashboard Dash/Plotly  →  http://127.0.0.1:8051                    │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -64,6 +64,22 @@ staging_imports    → controle de importações (idempotência por hash)
 staging_import_rows → linhas brutas com status de validação
 ```
 
+**Tabelas materializadas** (populadas pelas stored procedures abaixo):
+
+```
+dashboard_macros_agg     → resumo diário: dia × status × mensagem × qtd
+dashboard_arquivos_agg   → stats por arquivo: UCs únicas, combos processadas/ativas/inativas
+dashboard_cobertura_agg  → % do lote processado por arquivo de staging
+```
+
+**Stored procedures de refresh:**
+
+| Procedure | Popula | Complexidade |
+|---|---|---|
+| `sp_refresh_dashboard_macros_agg()` | `dashboard_macros_agg` | `GROUP BY` em `tabela_macros_cpfl` |
+| `sp_refresh_dashboard_arquivos_agg()` | `dashboard_arquivos_agg` | CTE com distribuição proporcional de status |
+| `sp_refresh_dashboard_cobertura_agg()` | `dashboard_cobertura_agg` | CTE com `pct_cobertura` por arquivo |
+
 **Ciclo de vida do status em `tabela_macros_cpfl`:**
 
 ```
@@ -85,8 +101,9 @@ projeto_orquestracao_cpfl/
 ├── config.example.py                # Template público de credenciais
 │
 ├── db_cpfl/
-│   ├── schema.sql                   # DDL completo: tabelas, índices, triggers
-│   └── setup_database.py            # Aplica schema via pymysql (idempotente)
+│   ├── schema.sql                              # DDL completo: tabelas, índices, triggers, procedures
+│   ├── setup_database.py                       # Aplica schema completo via pymysql (idempotente)
+│   └── migrate_add_materialized_tables.py      # Migração pontual: tabelas materializadas + SPs
 │
 ├── dados/                           # CSVs de entrada — NÃO versionados
 │
@@ -141,11 +158,22 @@ cp config.example.py config.py
 
 ### 2. Banco de Dados
 
+**Instalação completa (banco novo):**
 ```powershell
 python db_cpfl/setup_database.py
 ```
 
 O script é idempotente (`CREATE TABLE IF NOT EXISTS`, `INSERT ... ON DUPLICATE KEY UPDATE`).
+
+**Banco já existente — aplicar apenas as tabelas materializadas e stored procedures:**
+```powershell
+python db_cpfl/migrate_add_materialized_tables.py
+
+# Verificar sem executar:
+python db_cpfl/migrate_add_materialized_tables.py --dry-run
+```
+
+O script de migração: cria as 3 tabelas materializadas (`IF NOT EXISTS`), recria as 3 stored procedures (`DROP IF EXISTS + CREATE`) e executa um refresh inicial imediato.
 
 ### 3. Dependências
 
@@ -221,7 +249,7 @@ O orquestrador executa automaticamente:
 python -m dashboard_macros
 ```
 
-Acesse em [http://127.0.0.1:8050](http://127.0.0.1:8050). O dashboard lê de tabelas materializadas (`dashboard_macros_agg`, `dashboard_arquivos_agg`) atualizadas pelo scheduler interno.
+Acesse em [http://127.0.0.1:8051](http://127.0.0.1:8051). O dashboard lê de tabelas materializadas (`dashboard_macros_agg`, `dashboard_arquivos_agg`) atualizadas pelo scheduler interno.
 
 ---
 

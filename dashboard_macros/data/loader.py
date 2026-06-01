@@ -15,28 +15,12 @@ _CACHE_STATS: dict = {}  # cache para stats_por_arquivo / cobertura
 _CACHE_STATS_TTL = 3600  # segundos (1 hora)
 
 # ---------------------------------------------------------------------------
-# Tabela materializada — populada pela stored procedure
-# sp_refresh_dashboard_macros_agg() chamada ao final do ETL.
-# SELECT simples em tabela indexada: latência <1ms.
+# Tabelas materializadas — populadas pelas stored procedures
+# sp_refresh_dashboard_macros_agg() / sp_refresh_dashboard_arquivos_agg().
+# SELECT simples em tabelas indexadas: latência <1ms.
 # ---------------------------------------------------------------------------
-# Query direta na tabela_macros_cpfl + respostas (sem tabela materializada)
 SQLs = {
-    "macro": """
-        SELECT
-            DATE(tm.data_update)  AS dia,
-            tm.status             AS status,
-            r.mensagem            AS mensagem,
-            r.status              AS resposta_status,
-            NULL                  AS empresa,
-            NULL                  AS fornecedor,
-            NULL                  AS arquivo_origem,
-            COUNT(*)              AS qtd
-        FROM tabela_macros_cpfl tm
-        JOIN respostas r ON r.id = tm.resposta_id
-        WHERE tm.status NOT IN ('pendente', 'processando')
-        GROUP BY DATE(tm.data_update), tm.status, r.mensagem, r.status
-        ORDER BY dia DESC
-    """,
+    "macro": "SELECT * FROM dashboard_macros_agg ORDER BY dia DESC",
 }
 
 
@@ -83,64 +67,29 @@ def invalidar_cache(tipo: str = None):
 
 
 def refresh_dashboard_macros_agg() -> bool:
-    """Invalida o cache para forçar recarga na próxima leitura.
-    (CPFL: sem tabela materializada, dados lidos diretamente.)
-    """
+    """Chama sp_refresh_dashboard_macros_agg() no banco e invalida o cache local."""
+    try:
+        conn = pymysql.connect(**DB_CONFIG)
+        with conn.cursor() as cur:
+            cur.execute("CALL sp_refresh_dashboard_macros_agg()")
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[ERRO] sp_refresh_dashboard_macros_agg: {e}")
+        return False
     invalidar_cache("macro")
     return True
 
 
 # ---------------------------------------------------------------------------
-# Estatísticas por arquivo de staging
-# Usa staging_import_rows para contar combos distintas por arquivo (correto e
-# independente de quando o passo 02 rodou — antes o JOIN por data falhava se
-# o processamento ocorria em dias diferentes do import).
+# Estatísticas por arquivo de staging — tabela materializada
 # ---------------------------------------------------------------------------
-_SQL_STATS_ARQUIVO = """
-    SELECT
-        si.filename                          AS arquivo,
-        DATE(si.created_at)                  AS data_carga,
-        si.rows_success                      AS cpfs_no_arquivo,
-        COALESCE(cc.distinct_cpfs, 0)        AS cpfs_processados,
-        0                                    AS ativos,
-        0                                    AS inativos,
-        COALESCE(cc.distinct_cpfs, 0)        AS cpfs_ineditos,
-        COALESCE(cc.distinct_combos, 0)      AS ucs_ineditas,
-        0                                    AS combos_processadas,
-        0                                    AS combos_ativas,
-        0                                    AS combos_inativas,
-        0 AS ineditos_processados,
-        0 AS ineditos_ativos,
-        0 AS ineditos_inativos
-    FROM staging_imports si
-    LEFT JOIN (
-        SELECT
-            staging_id,
-            COUNT(DISTINCT normalized_cpf) AS distinct_cpfs,
-            COUNT(DISTINCT normalized_cpf, normalized_uc) AS distinct_combos
-        FROM staging_import_rows
-        WHERE validation_status = 'valid'
-        GROUP BY staging_id
-    ) cc ON cc.staging_id = si.id
-    WHERE si.status = 'completed'
-    ORDER BY si.created_at DESC
-"""
-
-# Status global de processamento das macros (não dependente de staging)
-_SQL_MACROS_STATUS_GLOBAL = """
-    SELECT
-        SUM(IF(status NOT IN ('pendente','processando'), 1, 0)) AS combos_processadas,
-        SUM(IF(status = 'ativo', 1, 0))  AS combos_ativas,
-        SUM(IF(status = 'inativo', 1, 0)) AS combos_inativas,
-        COUNT(*) AS total_macros
-    FROM tabela_macros_cpfl
-"""
+_SQL_ARQUIVOS_AGG = "SELECT * FROM dashboard_arquivos_agg ORDER BY data_carga DESC"
 
 
 def carregar_stats_por_arquivo() -> pd.DataFrame:
     """Retorna estatísticas de todos os arquivos de staging.
-    Conta combos distintas por arquivo via staging_import_rows, e
-    distribui proporcionalmente o status de processamento das macros.
+    Lê diretamente da tabela materializada dashboard_arquivos_agg.
     Cacheado em memória por _CACHE_STATS_TTL segundos.
     """
     cached = _CACHE_STATS.get("stats")
@@ -152,14 +101,9 @@ def carregar_stats_por_arquivo() -> pd.DataFrame:
     try:
         conn = pymysql.connect(**DB_CONFIG)
         with conn.cursor() as cur:
-            # Per-file distinct combos
-            cur.execute(_SQL_STATS_ARQUIVO)
+            cur.execute(_SQL_ARQUIVOS_AGG)
             cols = [d[0] for d in cur.description]
             rows = cur.fetchall()
-
-            # Global macro status
-            cur.execute(_SQL_MACROS_STATUS_GLOBAL)
-            global_row = cur.fetchone()
         conn.close()
 
         df = pd.DataFrame(rows, columns=cols)
@@ -171,17 +115,6 @@ def carregar_stats_por_arquivo() -> pd.DataFrame:
             if col not in ("arquivo", "data_carga"):
                 df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
 
-        # Distribui os status globais proporcionalmente baseado em ucs_ineditas
-        total_combos_all = int(df["ucs_ineditas"].sum())
-        if total_combos_all > 0 and global_row:
-            g_processadas = int(global_row[0] or 0)
-            g_ativas = int(global_row[1] or 0)
-            g_inativas = int(global_row[2] or 0)
-            for col, g_val in [("combos_processadas", g_processadas),
-                               ("combos_ativas", g_ativas),
-                               ("combos_inativas", g_inativas)]:
-                df[col] = (df["ucs_ineditas"] / total_combos_all * g_val).round(0).astype(int)
-
         if not df.empty:
             _CACHE_STATS["stats"] = (df, time.time())
         return df.copy()
@@ -191,7 +124,16 @@ def carregar_stats_por_arquivo() -> pd.DataFrame:
 
 
 def refresh_dashboard_arquivos_agg() -> bool:
-    """Invalida o cache de stats para forçar recarga na próxima leitura."""
+    """Chama sp_refresh_dashboard_arquivos_agg() no banco e invalida o cache local."""
+    try:
+        conn = pymysql.connect(**DB_CONFIG)
+        with conn.cursor() as cur:
+            cur.execute("CALL sp_refresh_dashboard_arquivos_agg()")
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[ERRO] sp_refresh_dashboard_arquivos_agg: {e}")
+        return False
     invalidar_cache("stats")
     return True
 

@@ -24,14 +24,14 @@ from pathlib import Path
 from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from config import db_destino  # noqa: E402
+from config import db_cpfl  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Configuração
 # ---------------------------------------------------------------------------
 LOCK_FILE = Path(__file__).parent / ".refresh_scheduler.lock"
 DEFAULT_INTERVAL = 1200  # 20 minutos em segundos
-DB_CONFIG = db_destino()
+DB_CONFIG = db_cpfl()
 
 # Logging
 logging.basicConfig(

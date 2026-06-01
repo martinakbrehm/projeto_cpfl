@@ -65,7 +65,7 @@ python db_cpfl/setup_database.py
 python -m dashboard_macros
 ```
 
-O dashboard estará disponível em `http://localhost:8050`
+O dashboard estará disponível em `http://localhost:8051`
 
 ## Configuração como serviço systemd
 
@@ -125,7 +125,7 @@ server {
     server_name seu-dominio.com;
 
     location / {
-        proxy_pass http://127.0.0.1:8050;
+        proxy_pass http://127.0.0.1:8051;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
@@ -145,5 +145,5 @@ Logs do dashboard estão em `/var/log/syslog` ou via `journalctl -u dashboard-ma
 
 - Verifique se todas as dependências estão instaladas
 - Confirme configurações do banco de dados
-- Verifique portas (8050 deve estar livre)
+- Verifique portas (8051 deve estar livre)
 - Use `python -c "import dash; print('Dash OK')"` para testar imports
